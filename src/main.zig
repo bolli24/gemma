@@ -1,5 +1,7 @@
 const std = @import("std");
 const rl = @import("raylib");
+const ecs = @import("ecs.zig");
+
 const ArrayList = std.ArrayList;
 
 const Ball = struct { pos: rl.Vector2, velocity: rl.Vector2, size: f32, color: rl.Color = rl.Color.red };
