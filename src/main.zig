@@ -33,7 +33,7 @@ pub fn main() anyerror!void {
         // Update
         //----------------------------------------------------------------------------------
 
-        if (rl.isKeyPressed(rl.KeyboardKey.space)) {
+        if (rl.isKeyPressed(.space)) {
             const dir = rl.Vector2.init(0, 1).rotate(rand.float(f32) * 2 * std.math.pi);
             const speed = std.math.lerp(base_speed / 2, base_speed * 2, rand.float(f32));
             try balls.append(Ball{
@@ -43,19 +43,36 @@ pub fn main() anyerror!void {
                 ),
                 .velocity = dir.scale(speed),
                 .size = rand.float(f32) * 20 + 3,
-                .color = rl.Color.init(rand.int(u8), rand.int(u8), rand.int(u8), 255),
+                .color = .init(rand.int(u8), rand.int(u8), rand.int(u8), 255),
             });
         }
 
         for (balls.items) |*ball| {
             ball.pos = ball.pos.add(ball.velocity.scale(rl.getFrameTime()));
+        }
 
+        for (balls.items, 0..) |*ball, index| {
             if (ball.pos.x >= @as(f32, @floatFromInt(screenWidth)) - ball.size or ball.pos.x <= ball.size) {
                 ball.velocity.x = -ball.velocity.x;
             }
 
             if (ball.pos.y >= @as(f32, @floatFromInt(screenHeight)) - ball.size or ball.pos.y <= ball.size) {
                 ball.velocity.y = -ball.velocity.y;
+            }
+
+            for (balls.items[index + 1 ..]) |*other| {
+                const overlap = (ball.size + other.size) - ball.pos.distance(other.pos);
+
+                if (overlap < 0) continue;
+
+                const difference = ball.pos.subtract(other.pos).normalize();
+                ball.pos = ball.pos.add(difference.scale(0.5 * overlap));
+                other.pos = other.pos.add(difference.scale(-0.5 * overlap));
+
+                const plane = rl.Vector2.init(difference.x, -difference.y);
+
+                ball.velocity = ball.velocity.reflect(plane);
+                other.velocity = other.velocity.reflect(plane);
             }
         }
 
