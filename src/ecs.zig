@@ -60,38 +60,101 @@ const World = struct {
     pub fn isValid(self: *Self, entity: Entity) bool {
         return self.flags.items[entity.id] and entity.generation == self.generations.items[entity.id];
     }
+
+    const SetInfo = struct { *SparseSet(anyopaque), type };
+
+    pub fn runSystem(self: *Self, comptime system: anytype) !void {
+        const type_info = @typeInfo(@TypeOf(system)).@"fn";
+
+        // TODO: support errors
+        if (type_info.return_type != void) {
+            @compileError("System must no return any value.");
+        }
+
+        // TODO: maybe store type with sparse set in here
+        var sets = [_]*SparseSet(anyopaque){undefined} ** type_info.params.len;
+        comptime var set_types = [_]type{undefined} ** type_info.params.len;
+
+        inline for (type_info.params, 0..) |*param, i| {
+            const set_type = @typeInfo(param.type.?).pointer.child;
+            sets[i] = @ptrCast(try self.components(set_type));
+            set_types[i] = set_type;
+        }
+
+        outer: for (sets[0].entities.items) |*entity| {
+            var values = [_]*anyopaque{undefined} ** type_info.params.len;
+
+            inline for (sets, set_types, 0..) |set, set_type, i| {
+                const typed_set = @as(*SparseSet(set_type), @ptrCast(set));
+                const ptr = typed_set.get(entity.*) orelse continue :outer;
+                values[i] = @ptrCast(ptr);
+            }
+
+            switch (type_info.params.len) {
+                inline 0 => system(),
+                inline 1 => system(@ptrCast(@alignCast(values[0]))),
+                inline 2 => system(@ptrCast(@alignCast(values[0])), @ptrCast(@alignCast(values[1]))),
+                inline else => @compileError("Too many arguments to system function")
+            }
+        }
+    }
 };
 
 pub fn SparseSet(comptime T: type) type {
     return struct {
-        map: std.AutoHashMap(Entity, usize),
+        entities: std.ArrayList(Entity),
+        sparse: std.ArrayList(usize),
         data: std.ArrayList(T),
 
         const Self = @This();
 
         pub fn init(allocator: Allocator) Self {
             return Self{
-                .map = .init(allocator),
+                .entities = .init(allocator),
+                .sparse = .init(allocator),
                 .data = .init(allocator),
             };
         }
 
+        pub fn contains(self: *Self, entity: Entity) bool {
+            return (self.sparse.items.len > entity.id and self.sparse.items[entity.id] != std.math.maxInt(usize));
+        }
+
         pub fn insert(self: *Self, entity: Entity, value: T) !void {
-            if (self.map.get(entity)) |index| {
-                const ptr = &self.data.items[index];
-                ptr.* = value;
-                return;
+            if (self.sparse.items.len > entity.id) {
+                const index = self.sparse.items[entity.id];
+                if (index != std.math.maxInt(usize)) {
+                    self.data.items[index] = value;
+                    return;
+                }
+            } else {
+                try self.sparse.appendNTimes(std.math.maxInt(usize), entity.id - self.sparse.items.len + 1);
             }
 
-            const index = self.data.items.len;
-            try self.map.put(entity, index);
             try self.data.append(value);
-            return;
+            try self.entities.append(entity);
+            self.sparse.items[entity.id] = self.data.items.len - 1;
         }
 
         pub fn get(self: *Self, entity: Entity) ?*T {
-            const index = self.map.get(entity) orelse return null;
+            if (self.sparse.items.len <= entity.id) return null;
+            const index = self.sparse.items[entity.id];
+            if (index == std.math.maxInt(usize)) return null;
             return &self.data.items[index];
+        }
+
+        pub fn remove(self: *Self, entity: Entity) void {
+            if (self.sparse.items.len < entity.id) return;
+            const index = &self.sparse.items[entity.id];
+            if (index.* == std.math.maxInt(usize)) return;
+
+            _ = self.data.swapRemove(index.*);
+            _ = self.entities.swapRemove(index.*);
+
+            if (self.entities.items.len > 0)
+                self.sparse.items[self.entities.items[index.*].id] = index.*;
+
+            index.* = std.math.maxInt(usize);
         }
     };
 }
@@ -111,6 +174,39 @@ pub inline fn typeId(comptime T: type) TypeId {
 
 const expectEqual = std.testing.expectEqual;
 const expect = std.testing.expect;
+
+fn printNumber(number: *i32) void {
+    std.debug.print("Number: {d}.\n", .{number.*});
+}
+
+fn printCharNTimes(char: *u8, number: *i32) void {
+    for (0..@intCast(number.*)) |_| {
+        std.debug.print("{c}", .{char.*});
+    }
+    std.debug.print("\n", .{});
+}
+
+test "system" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var world = World.init(gpa.allocator());
+
+    const entity1 = try world.create();
+    const entity2 = try world.create();
+    const entity3 = try world.create();
+
+    const integers = try world.components(i32);
+
+    _ = try integers.insert(entity1, 69);
+    _ = try integers.insert(entity2, 420);
+    _ = try integers.insert(entity3, 12);
+
+    const chars = try world.components(u8);
+
+    _ = try chars.insert(entity3, 'a');
+
+    try world.runSystem(printNumber);
+    try world.runSystem(printCharNTimes);
+}
 
 test "create entity" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -140,12 +236,19 @@ test "components" {
 
     const integers = try world.components(i32);
 
-    try integers.insert(entity1, 69);
-    try integers.insert(entity2, 420);
+    _ = try integers.insert(entity1, 69);
+    _ = try integers.insert(entity2, 420);
 
     const value1 = integers.get(entity1);
     const value2 = integers.get(entity2);
 
-    try expect(value1.?.* == 69);
-    try expect(value2.?.* == 420);
+    try expectEqual(69, value1.?.*);
+    try expectEqual(420, value2.?.*);
+
+    integers.remove(entity1);
+
+    try expectEqual(420, integers.get(entity2).?.*);
+    try expectEqual(null, integers.get(entity1));
+    try expect(integers.contains(entity2));
+    try expect(!integers.contains(entity1));
 }
