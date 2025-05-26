@@ -1,12 +1,12 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const Entity = struct {
+pub const Entity = struct {
     id: u32,
     generation: u32,
 };
 
-const World = struct {
+pub const World = struct {
     const Self = @This();
 
     flags: std.ArrayList(bool),
@@ -53,8 +53,19 @@ const World = struct {
         if (self.flags.items[entity.id] == false) {
             return;
         }
+
+        const iter = self.sets.valueIterator();
+        for (iter.next()) |set| {
+            try set.remove(entity);
+        }
+
         self.flags.items[entity.id] = false;
         try self.unused_ids.append(entity.id);
+    }
+
+    pub fn add_component(self: *Self, entity: Entity, value: anytype) !void {
+        const comps = try self.components(@TypeOf(value));
+        try comps.insert(entity, value);
     }
 
     pub fn isValid(self: *Self, entity: Entity) bool {
@@ -62,6 +73,38 @@ const World = struct {
     }
 
     const SetInfo = struct { *SparseSet(anyopaque), type };
+
+    pub fn query(self: *Self, comptime query_type: type) !query_type {
+        comptime var Values: type = undefined;
+
+        comptime switch (@typeInfo(query_type)) {
+            .@"struct" => |info| {
+                if (std.mem.indexOf(u8, @typeName(query_type), "Query") != null) {
+                    for (info.fields) |field| {
+                        if (std.mem.eql(u8, field.name, "type")) {
+                            Values = get_pointed_tuple(@typeInfo(field.type).@"struct");
+                        }
+                    }
+                } else {
+                    @compileError("Invalid system parameter.");
+                }
+            },
+            else => @compileError("Invalid system parameter."),
+        };
+
+        var new_query: query_type = .{
+            .world = self,
+            .current = 0,
+            .comps = undefined,
+        };
+
+        inline for (0..new_query.comps.len) |i| {
+            const set_type = std.meta.Child(@typeInfo(Values).@"struct".fields[i].type);
+            const set = try self.components(set_type);
+            new_query.comps[i] = @ptrCast(set);
+        }
+        return new_query;
+    }
 
     pub fn runSystem(self: *Self, comptime system: anytype) !void {
         const fn_info = switch (@typeInfo(@TypeOf(system))) {
@@ -104,21 +147,19 @@ const World = struct {
         // const comps = [_]*SparseSet(anyopaque){undefined} ** @typeInfo(Values).@"struct".fields.len;
         const query_type = get_query_type(@typeInfo(Values).@"struct");
 
-        var query: Query(query_type) = .{
+        var new_query: Query(query_type) = .{
             .world = self,
             .current = 0,
             .comps = undefined,
         };
 
-        inline for (0..query.comps.len) |i| {
+        inline for (0..new_query.comps.len) |i| {
             const set_type = std.meta.Child(@typeInfo(Values).@"struct".fields[i].type);
             const set = try self.components(set_type);
-            query.comps[i] = @ptrCast(set);
+            new_query.comps[i] = @ptrCast(set);
         }
 
-        // std.debug.print("{p}\n", .{query.next().?[0]});
-
-        system(&query);
+        system(&new_query);
     }
 };
 
@@ -270,7 +311,6 @@ const expect = std.testing.expect;
 
 fn printNumber(query: *Query(struct { i32 })) void {
     while (query.next()) |item| {
-        std.debug.print("Hello: {d}.\n", .{item[0]});
         std.debug.print("Number: {d}.\n", .{item[0].*});
     }
 }
@@ -305,6 +345,12 @@ test "system" {
 
     try world.runSystem(printNumber);
     try world.runSystem(printCharNTimes);
+
+    var query = try world.query(Query(struct { i32 }));
+
+    while (query.next()) |item| {
+        std.debug.print("Number: {d}.\n", .{item[0].*});
+    }
 }
 
 test "create entity" {
