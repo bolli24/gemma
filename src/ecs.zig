@@ -95,7 +95,7 @@ const World = struct {
                         }
                     }
                 },
-                else => @compileError("Invalid system parameter.")
+                else => @compileError("Invalid system parameter."),
             }
         };
 
@@ -111,7 +111,7 @@ const World = struct {
         };
 
         inline for (0..query.comps.len) |i| {
-            const set_type = comptime @TypeOf(query.comps[i]);
+            const set_type = std.meta.Child(@typeInfo(Values).@"struct".fields[i].type);
             const set = try self.components(set_type);
             query.comps[i] = @ptrCast(set);
         }
@@ -151,23 +151,24 @@ pub fn Query(comptime T: type) type {
 
         pub fn next(self: *Self) ?Values {
             var values: Values = undefined;
-            if (self.current == std.math.maxInt(usize)) return null;
+            if (self.current == std.math.maxInt(usize) or self.comps[0].entities.items.len == 0) return null;
 
             outer: for (self.comps[0].entities.items[self.current..], self.current..) |*entity, current| {
-                std.debug.print("hello: {d}", .{current});
                 inline for (self.comps, 0..) |set, i| {
                     const typed_set = @as(*SparseSet(struct_info.fields[i].type), @ptrCast(set));
                     const ptr = typed_set.get(entity.*) orelse continue :outer;
                     values[i] = @ptrCast(ptr);
                 }
-                self.current = current;
-                if (current == self.comps[0].entities.items.len) {
+                self.current = current + 1;
+                if (current >= self.comps[0].entities.items.len) {
                     self.current = std.math.maxInt(usize);
                 }
-                break;
-            }
 
-            return values;
+                return values;
+            }
+            self.current = std.math.maxInt(usize);
+
+            return null;
         }
     };
 }
@@ -269,15 +270,19 @@ const expect = std.testing.expect;
 
 fn printNumber(query: *Query(struct { i32 })) void {
     while (query.next()) |item| {
+        std.debug.print("Hello: {d}.\n", .{item[0]});
         std.debug.print("Number: {d}.\n", .{item[0].*});
     }
 }
 
-fn printCharNTimes(char: *u8, number: *i32) void {
-    for (0..@intCast(number.*)) |_| {
-        std.debug.print("{c}", .{char.*});
+fn printCharNTimes(query: *Query(struct { i32, u8 })) void {
+    while (query.next()) |item| {
+        const number, const char = item;
+        for (0..@intCast(number.*)) |_| {
+            std.debug.print("{c}", .{char.*});
+        }
+        std.debug.print("\n", .{});
     }
-    std.debug.print("\n", .{});
 }
 
 test "system" {
@@ -299,7 +304,7 @@ test "system" {
     _ = try chars.insert(entity3, 'a');
 
     try world.runSystem(printNumber);
-    // try world.runSystem(printCharNTimes);
+    try world.runSystem(printCharNTimes);
 }
 
 test "create entity" {
