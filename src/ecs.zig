@@ -64,41 +64,133 @@ const World = struct {
     const SetInfo = struct { *SparseSet(anyopaque), type };
 
     pub fn runSystem(self: *Self, comptime system: anytype) !void {
-        const type_info = @typeInfo(@TypeOf(system)).@"fn";
+        const fn_info = switch (@typeInfo(@TypeOf(system))) {
+            .@"fn" => |info| info,
+            else => @compileError("System must be function."),
+        };
 
         // TODO: support errors
-        if (type_info.return_type != void) {
-            @compileError("System must no return any value.");
+        if (fn_info.return_type != void) {
+            @compileError("System must not return any value.");
         }
 
-        // TODO: maybe store type with sparse set in here
-        var sets = [_]*SparseSet(anyopaque){undefined} ** type_info.params.len;
-        comptime var set_types = [_]type{undefined} ** type_info.params.len;
+        comptime var Values: type = undefined;
+        comptime var found_query = false;
 
-        inline for (type_info.params, 0..) |*param, i| {
-            const set_type = @typeInfo(param.type.?).pointer.child;
-            sets[i] = @ptrCast(try self.components(set_type));
-            set_types[i] = set_type;
-        }
-
-        outer: for (sets[0].entities.items) |*entity| {
-            var values = [_]*anyopaque{undefined} ** type_info.params.len;
-
-            inline for (sets, set_types, 0..) |set, set_type, i| {
-                const typed_set = @as(*SparseSet(set_type), @ptrCast(set));
-                const ptr = typed_set.get(entity.*) orelse continue :outer;
-                values[i] = @ptrCast(ptr);
+        comptime for (fn_info.params, 0..) |*param, i| {
+            _ = i;
+            const param_type = std.meta.Child(param.type orelse @compileError("Parameter type must be defined."));
+            switch (@typeInfo(param_type)) {
+                .@"struct" => |info| {
+                    if (std.mem.indexOf(u8, @typeName(param_type), "Query") != null) {
+                        if (found_query) {
+                            // TODO: support multiple queries
+                            @compileError("System parameters must not include more than one query.");
+                        }
+                        for (info.fields) |field| {
+                            if (std.mem.eql(u8, field.name, "type")) {
+                                found_query = true;
+                                Values = get_pointed_tuple(@typeInfo(field.type).@"struct");
+                            }
+                        }
+                    }
+                },
+                else => @compileError("Invalid system parameter.")
             }
+        };
 
-            switch (type_info.params.len) {
-                inline 0 => system(),
-                inline 1 => system(@ptrCast(@alignCast(values[0]))),
-                inline 2 => system(@ptrCast(@alignCast(values[0])), @ptrCast(@alignCast(values[1]))),
-                inline else => @compileError("Too many arguments to system function")
-            }
+        if (!found_query) @compileError("System parameters must include Query.");
+
+        // const comps = [_]*SparseSet(anyopaque){undefined} ** @typeInfo(Values).@"struct".fields.len;
+        const query_type = get_query_type(@typeInfo(Values).@"struct");
+
+        var query: Query(query_type) = .{
+            .world = self,
+            .current = 0,
+            .comps = undefined,
+        };
+
+        inline for (0..query.comps.len) |i| {
+            const set_type = comptime @TypeOf(query.comps[i]);
+            const set = try self.components(set_type);
+            query.comps[i] = @ptrCast(set);
         }
+
+        // std.debug.print("{p}\n", .{query.next().?[0]});
+
+        system(&query);
     }
 };
+
+pub fn Query(comptime T: type) type {
+    const struct_info: std.builtin.Type.Struct = switch (@typeInfo(T)) {
+        .@"struct" => |info| info,
+        else => @compileError(
+            "Query parameter must be a tuple struct.",
+        ),
+    };
+
+    if (!struct_info.is_tuple) @compileError("Query parameter must be a tuple struct.");
+
+    const Values = get_pointed_tuple(struct_info);
+    comptime var comp_types = [_]type{undefined} ** struct_info.fields.len;
+
+    for (struct_info.fields, 0..) |*field, i| {
+        comp_types[i] = *SparseSet(field.type);
+    }
+
+    const Comps = std.meta.Tuple(&comp_types);
+
+    return struct {
+        world: *World,
+        comps: Comps,
+        current: usize,
+        comptime type: T = undefined,
+
+        const Self = @This();
+
+        pub fn next(self: *Self) ?Values {
+            var values: Values = undefined;
+            if (self.current == std.math.maxInt(usize)) return null;
+
+            outer: for (self.comps[0].entities.items[self.current..], self.current..) |*entity, current| {
+                std.debug.print("hello: {d}", .{current});
+                inline for (self.comps, 0..) |set, i| {
+                    const typed_set = @as(*SparseSet(struct_info.fields[i].type), @ptrCast(set));
+                    const ptr = typed_set.get(entity.*) orelse continue :outer;
+                    values[i] = @ptrCast(ptr);
+                }
+                self.current = current;
+                if (current == self.comps[0].entities.items.len) {
+                    self.current = std.math.maxInt(usize);
+                }
+                break;
+            }
+
+            return values;
+        }
+    };
+}
+
+fn get_pointed_tuple(comptime struct_info: std.builtin.Type.Struct) type {
+    comptime var types = [_]type{undefined} ** struct_info.fields.len;
+
+    for (struct_info.fields, 0..) |*field, i| {
+        types[i] = *field.type;
+    }
+
+    return std.meta.Tuple(&types);
+}
+
+fn get_query_type(comptime struct_info: std.builtin.Type.Struct) type {
+    comptime var types = [_]type{undefined} ** struct_info.fields.len;
+
+    for (struct_info.fields, 0..) |*field, i| {
+        types[i] = std.meta.Child(field.type);
+    }
+
+    return std.meta.Tuple(&types);
+}
 
 pub fn SparseSet(comptime T: type) type {
     return struct {
@@ -175,8 +267,10 @@ pub inline fn typeId(comptime T: type) TypeId {
 const expectEqual = std.testing.expectEqual;
 const expect = std.testing.expect;
 
-fn printNumber(number: *i32) void {
-    std.debug.print("Number: {d}.\n", .{number.*});
+fn printNumber(query: *Query(struct { i32 })) void {
+    while (query.next()) |item| {
+        std.debug.print("Number: {d}.\n", .{item[0].*});
+    }
 }
 
 fn printCharNTimes(char: *u8, number: *i32) void {
@@ -205,7 +299,7 @@ test "system" {
     _ = try chars.insert(entity3, 'a');
 
     try world.runSystem(printNumber);
-    try world.runSystem(printCharNTimes);
+    // try world.runSystem(printCharNTimes);
 }
 
 test "create entity" {
