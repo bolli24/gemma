@@ -5,8 +5,11 @@ const ecs = @import("ecs.zig");
 const ArrayList = std.ArrayList;
 
 const Circle = struct { size: f32, color: rl.Color = rl.Color.red };
-const Pos = struct { rl.Vector2 };
-const Velocity = struct { rl.Vector2 };
+const Pos = ecs.component(rl.Vector2, "pos");
+const Velocity = ecs.component(rl.Vector2, "velocity");
+
+const screenWidth = 800;
+const screenHeight = 450;
 
 pub fn main() anyerror!void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -15,9 +18,6 @@ pub fn main() anyerror!void {
         try std.posix.getrandom(std.mem.asBytes(&seed));
         break :blk seed;
     });
-
-    const screenWidth = 800;
-    const screenHeight = 450;
 
     rl.initWindow(screenWidth, screenHeight, "gemma");
     defer rl.closeWindow(); // Close window and OpenGL context
@@ -52,16 +52,15 @@ pub fn main() anyerror!void {
                 std.math.lerp(40, screenHeight - 40, rand.float(f32)),
             );
 
-            try world.add_component(entity, .{pos});
-            try world.add_component(entity, .{dir.scale(speed)});
+            try world.add_component(entity, Pos{pos});
+            try world.add_component(entity, Velocity{dir.scale(speed)});
             try world.add_component(entity, Circle{
                 .size = rand.float(f32) * 20 + 3,
                 .color = .init(rand.int(u8), rand.int(u8), rand.int(u8), 255),
             });
-
-            @compileLog(ecs.typeId(Pos));
-            @compileLog(ecs.typeId(Velocity));
         }
+
+        try world.runSystem(update_balls);
 
         // Draw
         //----------------------------------------------------------------------------------
@@ -81,6 +80,21 @@ fn draw_circles(query: *ecs.Query(struct { Pos, Circle })) void {
     while (query.next()) |item| {
         const pos, const circle = item;
         rl.drawCircle(@intFromFloat(pos[0].x), @intFromFloat(pos[0].y), circle.size, circle.color);
+    }
+}
+
+fn update_balls(query: *ecs.Query(struct { Pos, Velocity, Circle })) void {
+    while (query.next()) |item| {
+        const pos, const velocity, const circle = item;
+        pos[0] = pos[0].add(velocity[0].scale(rl.getFrameTime()));
+
+        if (pos[0].x >= @as(f32, @floatFromInt(screenWidth)) - circle.size or pos[0].x <= circle.size) {
+            velocity[0].x = -velocity[0].x;
+        }
+
+        if (pos[0].y >= @as(f32, @floatFromInt(screenHeight)) - circle.size or pos[0].y <= circle.size) {
+            velocity[0].y = -velocity[0].y;
+        }
     }
 }
 

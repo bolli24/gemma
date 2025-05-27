@@ -163,6 +163,10 @@ pub const World = struct {
     }
 };
 
+pub fn distinct(comptime T: type) type {
+    return struct { value: T };
+}
+
 pub fn Query(comptime T: type) type {
     const struct_info: std.builtin.Type.Struct = switch (@typeInfo(T)) {
         .@"struct" => |info| info,
@@ -304,6 +308,66 @@ pub inline fn typeId(comptime T: type) TypeId {
         }
         var id: @typeInfo(TypeId).pointer.child = undefined;
     }.id;
+}
+
+pub fn component(comptime T: type, comptime u: []const u8) type {
+    const Type = std.builtin.Type;
+    // const type_info = @typeInfo(T);
+
+    // comptime var struct_info: std.builtin.Type.Struct = switch (type_info) {
+    //     .@"struct" => |s| s,
+    //     else => @compileError("Component type must be struct."),
+    // };
+
+    // comptime var prng = std.Random.DefaultPrng.init(0);
+
+    // const uuid = @import("uuid").v4.random(prng.random());
+    // comptime var buf: [36]u8 = undefined;
+    // @import("uuid").v4.toString(uuid, &buf);
+
+    // comptime var fields = [_]Type.StructField{undefined} ** (struct_info.fields.len + 1);
+
+    // for (0..struct_info.fields.len) |i| {
+    //     fields[i] = struct_info.fields[i];
+    // }
+
+    // const id_field = Type.StructField{
+    //     .name = "id_" ++ buf,
+    //     .type = void,
+    //     .is_comptime = false,
+    //     .alignment = 0,
+    //     .default_value_ptr = null,
+    // };
+
+    // struct_info.fields = &fields;
+    // struct_info.decls = &[0]Type.Declaration{};
+
+    // const extra: std.builtin.Type = .{ .@"struct" = .{
+    //     .layout = std.builtin.Type.ContainerLayout.auto,
+    //     .fields = &[1]Type.StructField{id_field},
+    //     .decls = &[0]Type.Declaration{},
+    //     .is_tuple = false,
+    // } };
+    //
+
+    const id_field = Type.EnumField{
+        .name = "id_" ++ u,
+        .value = 0,
+    };
+
+    const extra = std.builtin.Type{ .@"enum" = .{
+        .tag_type = u8,
+        .fields = &[1]Type.EnumField{id_field},
+        .decls = &[0]Type.Declaration{},
+        .is_exhaustive = false,
+    } };
+
+    const extra_type = @Type(extra);
+
+    return struct {
+        T,
+        comptime extra_type = @enumFromInt(0),
+    };
 }
 
 const expectEqual = std.testing.expectEqual;
