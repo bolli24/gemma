@@ -68,6 +68,8 @@ pub const World = struct {
         try comps.insert(entity, value);
     }
 
+    // TODO: get_component, delete_component
+
     pub fn isValid(self: *Self, entity: Entity) bool {
         return self.flags.items[entity.id] and entity.generation == self.generations.items[entity.id];
     }
@@ -106,6 +108,11 @@ pub const World = struct {
         return new_query;
     }
 
+    const SystemArg = union(enum) {
+        query: type,
+        world: void,
+    };
+
     pub fn runSystem(self: *Self, comptime system: anytype) !void {
         const fn_info = switch (@typeInfo(@TypeOf(system))) {
             .@"fn" => |info| info,
@@ -117,55 +124,76 @@ pub const World = struct {
             @compileError("System must not return any value.");
         }
 
-        comptime var Values: type = undefined;
-        comptime var found_query = false;
+        // comptime var Values: type = undefined;
 
-        comptime for (fn_info.params, 0..) |*param, i| {
-            _ = i;
+        comptime var input_args = [_]SystemArg{undefined} ** fn_info.params.len;
+
+        comptime outer: for (fn_info.params, 0..) |*param, i| {
             const param_type = std.meta.Child(param.type orelse @compileError("Parameter type must be defined."));
             switch (@typeInfo(param_type)) {
                 .@"struct" => |info| {
                     if (std.mem.indexOf(u8, @typeName(param_type), "Query") != null) {
-                        if (found_query) {
-                            // TODO: support multiple queries
-                            @compileError("System parameters must not include more than one query.");
-                        }
                         for (info.fields) |field| {
                             if (std.mem.eql(u8, field.name, "type")) {
-                                found_query = true;
-                                Values = get_pointed_tuple(@typeInfo(field.type).@"struct");
+                                input_args[i] = SystemArg{ .query = field.type };
+                                // Values = get_pointed_tuple(@typeInfo(field.type).@"struct");
+                                continue :outer;
                             }
                         }
+                        @compileError("Invald query type");
                     }
                 },
-                else => @compileError("Invalid system parameter."),
+                else => {
+                    @compileError("Invalid system parameter.");
+                },
             }
         };
 
-        if (!found_query) @compileError("System parameters must include Query.");
+        var output_args_array = [_]*anyopaque{undefined} ** fn_info.params.len;
+        comptime var OutPutArgs = [_]type{undefined} ** fn_info.params.len;
 
-        // const comps = [_]*SparseSet(anyopaque){undefined} ** @typeInfo(Values).@"struct".fields.len;
-        const query_type = get_query_type(@typeInfo(Values).@"struct");
+        inline for (input_args, 0..) |arg, i| {
+            switch (arg) {
+                .query => |query_type| {
+                    // TODO: make sure query arguments are unique
+                    const struct_info: std.builtin.Type.Struct = switch (@typeInfo(query_type)) {
+                        .@"struct" => |info| info,
+                        else => @compileError("Query argument must be tuple struct."),
+                    };
 
-        var new_query: Query(query_type) = .{
-            .world = self,
-            .current = 0,
-            .comps = undefined,
-        };
+                    if (!struct_info.is_tuple) {
+                        @compileError("Query argument must be tuple struct.");
+                    }
 
-        inline for (0..new_query.comps.len) |i| {
-            const set_type = std.meta.Child(@typeInfo(Values).@"struct".fields[i].type);
-            const set = try self.components(set_type);
-            new_query.comps[i] = @ptrCast(set);
+                    var new_query: Query(query_type) = .{
+                        .world = self,
+                        .current = 0,
+                        .comps = undefined,
+                    };
+
+                    inline for (0..new_query.comps.len) |j| {
+                        const set_type = struct_info.fields[j].type;
+                        const set = try self.components(set_type);
+                        new_query.comps[j] = @ptrCast(set);
+                    }
+
+                    OutPutArgs[i] = *Query(query_type);
+                    output_args_array[i] = &new_query;
+                },
+                else => @compileError("System arg not implemented yet.")
+            }
         }
 
-        system(&new_query);
+        const ArgsTuple = std.meta.Tuple(&OutPutArgs);
+        var args_tuple: ArgsTuple = undefined;
+
+        inline for (0..output_args_array.len) |i| {
+            args_tuple[i] = @as(OutPutArgs[i], @ptrCast(@alignCast(output_args_array[i])));
+        }
+
+        @call(.auto, system, args_tuple);
     }
 };
-
-pub fn distinct(comptime T: type) type {
-    return struct { value: T };
-}
 
 pub fn Query(comptime T: type) type {
     const struct_info: std.builtin.Type.Struct = switch (@typeInfo(T)) {
@@ -223,16 +251,6 @@ fn get_pointed_tuple(comptime struct_info: std.builtin.Type.Struct) type {
 
     for (struct_info.fields, 0..) |*field, i| {
         types[i] = *field.type;
-    }
-
-    return std.meta.Tuple(&types);
-}
-
-fn get_query_type(comptime struct_info: std.builtin.Type.Struct) type {
-    comptime var types = [_]type{undefined} ** struct_info.fields.len;
-
-    for (struct_info.fields, 0..) |*field, i| {
-        types[i] = std.meta.Child(field.type);
     }
 
     return std.meta.Tuple(&types);

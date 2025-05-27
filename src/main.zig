@@ -7,9 +7,11 @@ const ArrayList = std.ArrayList;
 const Circle = struct { size: f32, color: rl.Color = rl.Color.red };
 const Pos = ecs.component(rl.Vector2, "pos");
 const Velocity = ecs.component(rl.Vector2, "velocity");
+const Player = ecs.component(struct {}, "player");
 
 const screenWidth = 800;
 const screenHeight = 450;
+const player_speed = 200.0;
 
 pub fn main() anyerror!void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -30,17 +32,19 @@ pub fn main() anyerror!void {
 
     // const rand = prng.random();
 
-    var player: rl.Vector2 = .{ .x = screenWidth * 0.5, .y = screenHeight * 0.5 };
-    const player_speed = 200.0;
     const base_speed = 200.0;
 
     var world = ecs.World.init(gpa.allocator());
     const rand = prng.random();
+
+    const player = try world.create();
+    try world.add_component(player, Pos{.{ .x = screenWidth * 0.5, .y = screenHeight * 0.5 }});
+    try world.add_component(player, Player{});
+
     // Main game loop
     while (!rl.windowShouldClose()) { // Detect window close button or ESC key
         // Update
         //----------------------------------------------------------------------------------
-        player = player.add(getMovement().scale(rl.getFrameTime() * player_speed));
 
         if (rl.isKeyPressed(.space)) {
             const entity = try world.create();
@@ -61,6 +65,7 @@ pub fn main() anyerror!void {
         }
 
         try world.runSystem(update_balls);
+        try world.runSystem(player_control);
 
         // Draw
         //----------------------------------------------------------------------------------
@@ -70,9 +75,17 @@ pub fn main() anyerror!void {
 
         try world.runSystem(draw_circles);
 
-        rl.drawRectangle(@intFromFloat(player.x), @intFromFloat(player.y), 20, 20, .red);
+        const player_pos: rl.Vector2 = (try world.components(Pos)).get(player).?[0];
+        rl.drawRectangle(@intFromFloat(player_pos.x), @intFromFloat(player_pos.y), 20, 20, .red);
 
         //----------------------------------------------------------------------------------
+    }
+}
+
+fn player_control(query: *ecs.Query(struct { Pos, Player })) void {
+    while (query.next()) |item| {
+        const pos = item[0];
+        pos[0] = pos[0].add(getMovement().scale(rl.getFrameTime() * player_speed));
     }
 }
 
