@@ -54,9 +54,9 @@ pub const World = struct {
             return;
         }
 
-        const iter = self.sets.valueIterator();
-        for (iter.next()) |set| {
-            try set.remove(entity);
+        var iter = self.sets.valueIterator();
+        while (iter.next()) |*set| {
+            set.*.remove(entity);
         }
 
         self.flags.items[entity.id] = false;
@@ -238,11 +238,21 @@ fn get_query_type(comptime struct_info: std.builtin.Type.Struct) type {
     return std.meta.Tuple(&types);
 }
 
+fn makeSwapRemoveFn(comptime T: type) fn (*anyopaque, usize) void {
+    return struct {
+        fn swapRemove(ptr: *anyopaque, index: usize) void {
+            const list: *std.ArrayList(T) = @ptrCast(@alignCast(ptr));
+            _ = list.swapRemove(index);
+        }
+    }.swapRemove;
+}
+
 pub fn SparseSet(comptime T: type) type {
     return struct {
         entities: std.ArrayList(Entity),
         sparse: std.ArrayList(usize),
         data: std.ArrayList(T),
+        swap_remove: *const fn (*anyopaque, usize) void,
 
         const Self = @This();
 
@@ -251,6 +261,7 @@ pub fn SparseSet(comptime T: type) type {
                 .entities = .init(allocator),
                 .sparse = .init(allocator),
                 .data = .init(allocator),
+                .swap_remove = makeSwapRemoveFn(T),
             };
         }
 
@@ -286,7 +297,7 @@ pub fn SparseSet(comptime T: type) type {
             const index = &self.sparse.items[entity.id];
             if (index.* == std.math.maxInt(usize)) return;
 
-            _ = self.data.swapRemove(index.*);
+            _ = self.swap_remove(&self.data, index.*);
             _ = self.entities.swapRemove(index.*);
 
             if (self.entities.items.len > 0)
