@@ -25,7 +25,18 @@ pub const World = struct {
         };
     }
 
-    // FIXME: deinit
+    pub fn deinit(self: *Self) void {
+        self.flags.deinit();
+        self.unused_ids.deinit();
+        self.generations.deinit();
+
+        var set_iter = self.sets.valueIterator();
+        while (set_iter.next()) |set| {
+            set.deinit();
+        }
+
+        self.sets.deinit();
+    }
 
     pub fn components(self: *Self, comptime T: type) !*SparseSet(T) {
         const entry = try self.sets.getOrPut(typeId(T));
@@ -358,12 +369,22 @@ fn makeSwapRemoveFn(comptime T: type) fn (*anyopaque, usize) void {
     }.swapRemove;
 }
 
+fn makeDeinitFn(comptime T: type) fn (*anyopaque) void {
+    return struct {
+        fn deinit(ptr: *anyopaque) void {
+            const list: *std.ArrayList(T) = @ptrCast(@alignCast(ptr));
+            list.deinit();
+        }
+    }.deinit;
+}
+
 pub fn SparseSet(comptime T: type) type {
     return struct {
         entities: std.ArrayList(Entity),
         sparse: std.ArrayList(usize),
         data: std.ArrayList(T),
         swap_remove: *const fn (*anyopaque, usize) void,
+        data_deinit: *const fn (*anyopaque) void,
 
         const Self = @This();
 
@@ -373,7 +394,13 @@ pub fn SparseSet(comptime T: type) type {
                 .sparse = .init(allocator),
                 .data = .init(allocator),
                 .swap_remove = makeSwapRemoveFn(T),
+                .data_deinit = makeDeinitFn(T),
             };
+        }
+        pub fn deinit(self: *Self) void {
+            self.entities.deinit();
+            self.sparse.deinit();
+            self.data_deinit(@ptrCast(&self.data));
         }
 
         pub fn contains(self: *Self, entity: Entity) bool {

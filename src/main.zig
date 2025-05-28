@@ -15,6 +15,8 @@ const player_speed = 200.0;
 
 pub fn main() anyerror!void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.detectLeaks();
+
     var prng = std.Random.DefaultPrng.init(blk: {
         var seed: u64 = undefined;
         try std.posix.getrandom(std.mem.asBytes(&seed));
@@ -35,6 +37,7 @@ pub fn main() anyerror!void {
     const base_speed = 200.0;
 
     var world = ecs.World.init(gpa.allocator());
+    defer world.deinit();
     const rand = prng.random();
 
     const player = try world.create();
