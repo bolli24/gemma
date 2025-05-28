@@ -25,6 +25,8 @@ pub const World = struct {
         };
     }
 
+    // FIXME: deinit
+
     pub fn components(self: *Self, comptime T: type) !*SparseSet(T) {
         const entry = try self.sets.getOrPut(typeId(T));
         if (!entry.found_existing) {
@@ -84,7 +86,7 @@ pub const World = struct {
                 if (std.mem.indexOf(u8, @typeName(query_type), "Query") != null) {
                     for (info.fields) |field| {
                         if (std.mem.eql(u8, field.name, "type")) {
-                            Values = get_pointed_tuple(@typeInfo(field.type).@"struct");
+                            Values = get_query_tuple(@typeInfo(field.type).@"struct");
                         }
                     }
                 } else {
@@ -101,15 +103,21 @@ pub const World = struct {
         };
 
         inline for (0..new_query.comps.len) |i| {
-            const set_type = std.meta.Child(@typeInfo(Values).@"struct".fields[i].type);
-            const set = try self.components(set_type);
-            new_query.comps[i] = @ptrCast(set);
+            const value_type = @typeInfo(Values).@"struct".fields[i].type;
+            if (value_type != Entity) {
+                const set_type = std.meta.Child();
+                const set = try self.components(set_type);
+                new_query.comps[i] = @ptrCast(set);
+            } else {
+                new_query.comps[i] = null;
+            }
         }
         return new_query;
     }
 
     const SystemArg = union(enum) {
         query: type,
+        commands: void,
         world: void,
     };
 
@@ -120,16 +128,26 @@ pub const World = struct {
         };
 
         // TODO: support errors
-        if (fn_info.return_type != void) {
+        const return_type_info = @typeInfo(fn_info.return_type orelse void);
+
+        const void_return = switch (return_type_info) {
+            .void => true,
+            .error_union => |error_union| error_union.payload == void,
+            else => false,
+        };
+
+        if (!void_return) {
             @compileError("System must not return any value.");
         }
-
-        // comptime var Values: type = undefined;
 
         comptime var input_args = [_]SystemArg{undefined} ** fn_info.params.len;
 
         comptime outer: for (fn_info.params, 0..) |*param, i| {
             const param_type = std.meta.Child(param.type orelse @compileError("Parameter type must be defined."));
+            if (param_type == Commands) {
+                input_args[i] = .{ .commands = {} };
+                continue :outer;
+            }
             switch (@typeInfo(param_type)) {
                 .@"struct" => |info| {
                     if (std.mem.indexOf(u8, @typeName(param_type), "Query") != null) {
@@ -180,7 +198,12 @@ pub const World = struct {
                     OutPutArgs[i] = *Query(query_type);
                     output_args_array[i] = &new_query;
                 },
-                else => @compileError("System arg not implemented yet.")
+                .commands => {
+                    OutPutArgs[i] = *Commands;
+                    var commands = Commands.init(self.allocator);
+                    output_args_array[i] = @ptrCast(&commands);
+                },
+                else => @compileError("System arg not implemented yet."),
             }
         }
 
@@ -191,7 +214,28 @@ pub const World = struct {
             args_tuple[i] = @as(OutPutArgs[i], @ptrCast(@alignCast(output_args_array[i])));
         }
 
-        @call(.auto, system, args_tuple);
+        if (fn_info.return_type == void) {
+            @call(.auto, system, args_tuple);
+        } else {
+            try @call(.auto, system, args_tuple);
+        }
+
+        inline for (input_args, 0..) |arg, i| {
+            switch (arg) {
+                .commands => {
+                    const commands: *Commands = @ptrCast(args_tuple[i]);
+                    for (commands.list.items) |cmd| {
+                        switch (cmd) {
+                            .delete => |entity| {
+                                try self.delete(entity);
+                            },
+                        }
+                    }
+                    commands.deinit();
+                },
+                else => {},
+            }
+        }
     }
 };
 
@@ -205,7 +249,11 @@ pub fn Query(comptime T: type) type {
 
     if (!struct_info.is_tuple) @compileError("Query parameter must be a tuple struct.");
 
-    const Values = get_pointed_tuple(struct_info);
+    if (struct_info.fields.len == 0) {
+        @compileLog("Query parameter must contain at least one field.");
+    }
+
+    const Values = get_query_tuple(struct_info);
     comptime var comp_types = [_]type{undefined} ** struct_info.fields.len;
 
     for (struct_info.fields, 0..) |*field, i| {
@@ -214,26 +262,41 @@ pub fn Query(comptime T: type) type {
 
     const Comps = std.meta.Tuple(&comp_types);
 
-    return struct {
-        world: *World,
-        comps: Comps,
+    const QueryIter = struct {
+        query: *Query(T),
         current: usize,
-        comptime type: T = undefined,
 
-        const Self = @This();
-
-        pub fn next(self: *Self) ?Values {
+        pub fn next(self: *@This()) ?Values {
             var values: Values = undefined;
-            if (self.current == std.math.maxInt(usize) or self.comps[0].entities.items.len == 0) return null;
 
-            outer: for (self.comps[0].entities.items[self.current..], self.current..) |*entity, current| {
-                inline for (self.comps, 0..) |set, i| {
-                    const typed_set = @as(*SparseSet(struct_info.fields[i].type), @ptrCast(set));
-                    const ptr = typed_set.get(entity.*) orelse continue :outer;
-                    values[i] = @ptrCast(ptr);
+            comptime var ref_index: usize = undefined;
+            inline for (@typeInfo(Values).@"struct".fields, 0..) |field, i| {
+                if (field.type == Entity) {
+                    if (@typeInfo(Values).@"struct".fields.len == 1) {
+                        // TODO:
+                        @compileError("Query must contain at least one none Entity field");
+                    }
+                } else {
+                    ref_index = i;
+                }
+            }
+
+            const entities = self.query.comps[ref_index].entities.items;
+
+            if (self.current == std.math.maxInt(usize) or entities.len == 0) return null;
+
+            outer: for (entities[self.current..], self.current..) |*entity, current| {
+                inline for (self.query.comps, 0..) |set, i| {
+                    if (struct_info.fields[i].type == Entity) {
+                        values[i] = entity.*;
+                    } else {
+                        const typed_set = @as(*SparseSet(struct_info.fields[i].type), @ptrCast(set));
+                        const ptr = typed_set.get(entity.*) orelse continue :outer;
+                        values[i] = @ptrCast(ptr);
+                    }
                 }
                 self.current = current + 1;
-                if (current >= self.comps[0].entities.items.len) {
+                if (current >= entities.len) {
                     self.current = std.math.maxInt(usize);
                 }
 
@@ -244,13 +307,43 @@ pub fn Query(comptime T: type) type {
             return null;
         }
     };
+
+    return struct {
+        world: *World,
+        comps: Comps,
+        current: usize,
+        comptime type: T = undefined,
+
+        const Self = @This();
+
+        pub fn iter(self: *Self) QueryIter {
+            return QueryIter{
+                .query = self,
+                .current = 0,
+            };
+        }
+
+        pub fn single(self: *Self) ?Values {
+            var iter_ = self.iter();
+            const value = iter_.next();
+            if (iter_.next() != null) {
+                return null;
+            } else {
+                return value;
+            }
+        }
+    };
 }
 
-fn get_pointed_tuple(comptime struct_info: std.builtin.Type.Struct) type {
+fn get_query_tuple(comptime struct_info: std.builtin.Type.Struct) type {
     comptime var types = [_]type{undefined} ** struct_info.fields.len;
 
     for (struct_info.fields, 0..) |*field, i| {
-        types[i] = *field.type;
+        if (field.type == Entity) {
+            types[i] = Entity;
+        } else {
+            types[i] = *field.type;
+        }
     }
 
     return std.meta.Tuple(&types);
@@ -311,20 +404,45 @@ pub fn SparseSet(comptime T: type) type {
         }
 
         pub fn remove(self: *Self, entity: Entity) void {
-            if (self.sparse.items.len < entity.id) return;
+            if (self.sparse.items.len <= entity.id) return;
             const index = &self.sparse.items[entity.id];
             if (index.* == std.math.maxInt(usize)) return;
 
-            _ = self.swap_remove(&self.data, index.*);
-            _ = self.entities.swapRemove(index.*);
+            const removed_index = index.*;
 
-            if (self.entities.items.len > 0)
-                self.sparse.items[self.entities.items[index.*].id] = index.*;
+            _ = self.swap_remove(&self.data, removed_index);
+            _ = self.entities.swapRemove(removed_index);
+
+            if (self.entities.items.len > removed_index)
+                self.sparse.items[self.entities.items[removed_index].id] = removed_index;
 
             index.* = std.math.maxInt(usize);
         }
     };
 }
+
+pub const Commands = struct {
+    const Self = @This();
+    list: std.ArrayList(Command),
+
+    const Command = union(enum) {
+        delete: Entity,
+    };
+
+    pub fn init(allocator: Allocator) @This() {
+        return Self{
+            .list = .init(allocator),
+        };
+    }
+
+    pub fn deinit(self: Self) void {
+        self.list.deinit();
+    }
+
+    pub fn delete(self: *Self, entity: Entity) !void {
+        try self.list.append(.{ .delete = entity });
+    }
+};
 
 const TypeId = *const struct {
     _: u8,
@@ -341,43 +459,6 @@ pub inline fn typeId(comptime T: type) TypeId {
 
 pub fn component(comptime T: type, comptime u: []const u8) type {
     const Type = std.builtin.Type;
-    // const type_info = @typeInfo(T);
-
-    // comptime var struct_info: std.builtin.Type.Struct = switch (type_info) {
-    //     .@"struct" => |s| s,
-    //     else => @compileError("Component type must be struct."),
-    // };
-
-    // comptime var prng = std.Random.DefaultPrng.init(0);
-
-    // const uuid = @import("uuid").v4.random(prng.random());
-    // comptime var buf: [36]u8 = undefined;
-    // @import("uuid").v4.toString(uuid, &buf);
-
-    // comptime var fields = [_]Type.StructField{undefined} ** (struct_info.fields.len + 1);
-
-    // for (0..struct_info.fields.len) |i| {
-    //     fields[i] = struct_info.fields[i];
-    // }
-
-    // const id_field = Type.StructField{
-    //     .name = "id_" ++ buf,
-    //     .type = void,
-    //     .is_comptime = false,
-    //     .alignment = 0,
-    //     .default_value_ptr = null,
-    // };
-
-    // struct_info.fields = &fields;
-    // struct_info.decls = &[0]Type.Declaration{};
-
-    // const extra: std.builtin.Type = .{ .@"struct" = .{
-    //     .layout = std.builtin.Type.ContainerLayout.auto,
-    //     .fields = &[1]Type.StructField{id_field},
-    //     .decls = &[0]Type.Declaration{},
-    //     .is_tuple = false,
-    // } };
-    //
 
     const id_field = Type.EnumField{
         .name = "id_" ++ u,
