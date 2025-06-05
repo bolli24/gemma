@@ -24,13 +24,10 @@ pub fn main() anyerror!void {
     });
 
     rl.initWindow(screenWidth, screenHeight, "gemma");
-    defer rl.closeWindow(); // Close window and OpenGL context
+    defer rl.closeWindow();
 
-    rl.setTargetFPS(120); // Set our game to run at 60 frames-per-second
+    rl.setTargetFPS(120);
     //--------------------------------------------------------------------------------------
-
-    // var balls = ArrayList(Ball).init(gpa.allocator());
-    // defer balls.deinit();
 
     // const rand = prng.random();
 
@@ -43,6 +40,8 @@ pub fn main() anyerror!void {
     const player = try world.create();
     try world.add_component(player, Pos{.{ .x = screenWidth * 0.5, .y = screenHeight * 0.5 }});
     try world.add_component(player, Player{.{ .size = 20.0 }});
+
+    _ = try world.add_resource(i32, 0);
 
     // Main game loop
     while (!rl.windowShouldClose()) { // Detect window close button or ESC key
@@ -78,8 +77,12 @@ pub fn main() anyerror!void {
 
         try world.runSystem(draw_circles);
 
+        const score_text = try std.fmt.allocPrintZ(gpa.allocator(), "Score: {d}", .{world.get_resource(i32).?.*});
+        defer gpa.allocator().free(score_text);
+
         const player_pos: rl.Vector2 = (try world.components(Pos)).get(player).?[0];
         rl.drawRectangle(@intFromFloat(player_pos.x), @intFromFloat(player_pos.y), 20, 20, .red);
+        rl.drawText(score_text, 4, 4, 10, rl.Color.red);
 
         //----------------------------------------------------------------------------------
     }
@@ -92,7 +95,12 @@ fn player_control(query: *ecs.Query(struct { Pos, Player })) void {
     }
 }
 
-fn player_kill(commands: *ecs.Commands, player_q: *ecs.Query(struct { Pos, Player }), balls: *ecs.Query(struct { ecs.Entity, Pos, Circle })) !void {
+fn player_kill(
+    commands: *ecs.Commands,
+    score: *ecs.Res(*i32),
+    player_q: *ecs.Query(struct { Pos, Player }),
+    balls: *ecs.Query(struct { ecs.Entity, Pos, Circle }),
+) !void {
     const player = player_q.single() orelse return;
     var balls_iter = balls.iter();
     while (balls_iter.next()) |ball| {
@@ -101,6 +109,7 @@ fn player_kill(commands: *ecs.Commands, player_q: *ecs.Query(struct { Pos, Playe
         if (intersect(player[0][0], player[1][0].size, pos[0], circle.size)) {
             circle.color = rl.Color.red;
             try commands.delete(entity);
+            score.value.* += 1;
         }
     }
 }
