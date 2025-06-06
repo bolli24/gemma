@@ -9,10 +9,13 @@ pub const Entity = struct {
 pub const World = struct {
     const Self = @This();
 
+    const ResourcePtr = struct { ptr: *anyopaque, size_of: usize, align_of: std.mem.Alignment };
+
     flags: std.ArrayList(bool),
     unused_ids: std.ArrayList(u32),
     generations: std.ArrayList(u32),
     sets: std.AutoHashMap(TypeId, SparseSet(anyopaque)),
+    resources: std.AutoHashMap(TypeId, ResourcePtr),
     allocator: Allocator,
 
     pub fn init(allocator: Allocator) Self {
@@ -21,6 +24,7 @@ pub const World = struct {
             .unused_ids = .init(allocator),
             .generations = .init(allocator),
             .sets = .init(allocator),
+            .resources = .init(allocator),
             .allocator = allocator,
         };
     }
@@ -34,8 +38,13 @@ pub const World = struct {
         while (set_iter.next()) |set| {
             set.deinit();
         }
-
         self.sets.deinit();
+
+        var res_iter = self.resources.valueIterator();
+        while (res_iter.next()) |res| {
+            self.destroy_resouce(res.*);
+        }
+        self.resources.deinit();
     }
 
     pub fn components(self: *Self, comptime T: type) !*SparseSet(T) {
@@ -79,6 +88,34 @@ pub const World = struct {
     pub fn add_component(self: *Self, entity: Entity, value: anytype) !void {
         const comps = try self.components(@TypeOf(value));
         try comps.insert(entity, value);
+    }
+
+    pub fn add_resource(self: *Self, comptime T: type, resource: T) !*T {
+        const ptr = try self.allocator.create(T);
+        ptr.* = resource;
+
+        try self.resources.put(typeId(@TypeOf(resource)), .{
+            .ptr = ptr,
+            .size_of = @sizeOf(T),
+            .align_of = .fromByteUnits(@alignOf(T)),
+        });
+
+        return ptr;
+    }
+
+    pub fn get_resource(self: *Self, comptime T: type) ?*T {
+        const res = self.resources.get(typeId(T)) orelse return null;
+        return @alignCast(@ptrCast(res.ptr));
+    }
+
+    pub fn remove_resource(self: *Self, comptime T: type) !void {
+        if (self.resources.get(typeId(T))) |res| {
+            self.destroy_resouce(res);
+        }
+    }
+
+    fn destroy_resouce(self: *Self, res: ResourcePtr) void {
+        self.allocator.rawFree(@as([*]u8, @ptrCast(res.ptr))[0..res.size_of], res.align_of, @returnAddress());
     }
 
     // TODO: get_component, delete_component
@@ -128,6 +165,7 @@ pub const World = struct {
 
     const SystemArg = union(enum) {
         query: type,
+        res: type,
         commands: void,
         world: void,
     };
@@ -165,11 +203,18 @@ pub const World = struct {
                         for (info.fields) |field| {
                             if (std.mem.eql(u8, field.name, "type")) {
                                 input_args[i] = SystemArg{ .query = field.type };
-                                // Values = get_pointed_tuple(@typeInfo(field.type).@"struct");
                                 continue :outer;
                             }
                         }
                         @compileError("Invald query type");
+                    } else if (std.mem.indexOf(u8, @typeName(param_type), "Res") != null) {
+                        const res_type = info.fields[0].type;
+                        switch (@typeInfo(res_type)) {
+                            .pointer => {
+                                input_args[i] = SystemArg{ .res = res_type };
+                            },
+                            else => @compileError("Invald reource argument. Must be pointer.")
+                        }
                     }
                 },
                 else => {
@@ -214,6 +259,16 @@ pub const World = struct {
                     var commands = Commands.init(self.allocator);
                     output_args_array[i] = @ptrCast(&commands);
                 },
+                .res => |res| {
+                    OutPutArgs[i] = *Res(res);
+                    const ptr = self.get_resource(std.meta.Child(res));
+                    const value_ptr: res = if (ptr) |a_ptr| @as(res, @ptrCast(a_ptr)) else return;
+
+                    const new_res = Res(res){
+                        .value = value_ptr,
+                    };
+                    output_args_array[i] = @ptrCast(@constCast(&new_res));
+                },
                 else => @compileError("System arg not implemented yet."),
             }
         }
@@ -249,6 +304,10 @@ pub const World = struct {
         }
     }
 };
+
+pub fn Res(comptime T: type) type {
+    return struct { value: T };
+}
 
 pub fn Query(comptime T: type) type {
     const struct_info: std.builtin.Type.Struct = switch (@typeInfo(T)) {
