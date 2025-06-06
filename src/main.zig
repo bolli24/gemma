@@ -136,15 +136,12 @@ fn draw_circles(query: *ecs.Query(struct { Pos, Circle })) void {
     }
 }
 
-// fn collide_circles(query: *ecs.Query(struct { Pos, Circle }), wo)
-
 fn update_balls(query: *ecs.Query(struct { Pos, Velocity, Circle })) void {
     var iter = query.iter();
+    var i: u32 = 0;
     while (iter.next()) |item| {
         const pos, const velocity, const circle = item;
         pos[0] = pos[0].add(velocity[0].scale(rl.getFrameTime()));
-
-        // @compileLog(item);
 
         if (pos[0].x >= @as(f32, @floatFromInt(screenWidth)) - circle.size or pos[0].x <= circle.size) {
             velocity[0].x = -velocity[0].x;
@@ -153,6 +150,30 @@ fn update_balls(query: *ecs.Query(struct { Pos, Velocity, Circle })) void {
         if (pos[0].y >= @as(f32, @floatFromInt(screenHeight)) - circle.size or pos[0].y <= circle.size) {
             velocity[0].y = -velocity[0].y;
         }
+
+        var other_iter = query.iter();
+        var j: u32 = 0;
+        inner: while (other_iter.next()) |other| {
+            if (j == i) break :inner;
+
+            defer j += 1;
+
+            const other_pos, const other_velocity, const other_circle = other;
+
+            const overlap = (circle.size + other_circle.size) - pos[0].distance(other_pos[0]);
+
+            if (overlap < 0) continue;
+
+            const difference = pos[0].subtract(other_pos[0]).normalize();
+            pos[0] = pos[0].add(difference.scale(0.5 * overlap));
+            other_pos[0] = other_pos[0].add(difference.scale(-0.5 * overlap));
+
+            const plane = rl.Vector2.init(difference.x, -difference.y);
+
+            velocity[0] = velocity[0].reflect(plane);
+            other_velocity[0] = other_velocity[0].reflect(plane);
+        }
+        i += 1;
     }
 }
 
