@@ -82,7 +82,7 @@ pub fn main() anyerror!void {
 
         const player_pos: rl.Vector2 = (try world.components(Pos)).get(player).?[0];
         rl.drawRectangle(@intFromFloat(player_pos.x), @intFromFloat(player_pos.y), 20, 20, .red);
-        rl.drawText(score_text, 4, 4, 10, rl.Color.red);
+        rl.drawText(score_text, 4, 4, 20, rl.Color.red);
 
         //----------------------------------------------------------------------------------
     }
