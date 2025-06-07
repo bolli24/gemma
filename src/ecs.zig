@@ -412,7 +412,7 @@ fn get_query_tuple(comptime struct_info: std.builtin.Type.Struct) type {
         if (field.type == Entity) {
             types[i] = Entity;
         } else {
-            types[i] = *field.type;
+            types[i] = *DerefComponent(field.type);
         }
     }
 
@@ -543,7 +543,7 @@ pub inline fn typeId(comptime T: type) TypeId {
     }.id;
 }
 
-pub fn component(comptime T: type, comptime u: []const u8) type {
+pub fn Component(comptime T: type, comptime u: []const u8) type {
     const Type = std.builtin.Type;
 
     const id_field = Type.EnumField{
@@ -564,6 +564,24 @@ pub fn component(comptime T: type, comptime u: []const u8) type {
         T,
         comptime extra_type = @enumFromInt(0),
     };
+}
+
+pub fn DerefComponent(comptime T: type) type {
+    const info = @typeInfo(T);
+    const some_type = Component(struct {}, "some_type");
+    const some_name = @typeName(@typeInfo(some_type).@"struct".fields[1].type);
+
+    switch (info) {
+        .@"struct" => |struct_info| {
+            for (struct_info.fields) |*field| {
+                if (std.mem.eql(u8, some_name, @typeName(field.type))) {
+                    return struct_info.fields[0].type;
+                }
+            }
+        },
+        else => {},
+    }
+    return T;
 }
 
 const expectEqual = std.testing.expectEqual;

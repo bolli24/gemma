@@ -5,9 +5,9 @@ const ecs = @import("ecs.zig");
 const ArrayList = std.ArrayList;
 
 const Circle = struct { size: f32, color: rl.Color = rl.Color.red };
-const Pos = ecs.component(rl.Vector2, "pos");
-const Velocity = ecs.component(rl.Vector2, "velocity");
-const Player = ecs.component(struct { size: f32 }, "player");
+const Pos = ecs.Component(rl.Vector2, "pos");
+const Velocity = ecs.Component(rl.Vector2, "velocity");
+const Player = ecs.Component(struct { size: f32 }, "player");
 
 const screenWidth = 800;
 const screenHeight = 450;
@@ -91,7 +91,7 @@ pub fn main() anyerror!void {
 fn player_control(query: *ecs.Query(struct { Pos, Player })) void {
     if (query.single()) |item| {
         const pos = item[0];
-        pos[0] = pos[0].add(getMovement().scale(rl.getFrameTime() * player_speed));
+        pos.* = pos.add(getMovement().scale(rl.getFrameTime() * player_speed));
     }
 }
 
@@ -106,7 +106,7 @@ fn player_kill(
     while (balls_iter.next()) |ball| {
         const entity, const pos, const circle = ball;
 
-        if (intersect(player[0][0], player[1][0].size, pos[0], circle.size)) {
+        if (intersect(player[0].*, player[1].size, pos.*, circle.size)) {
             circle.color = rl.Color.red;
             try commands.delete(entity);
             score.value.* += 1;
@@ -132,7 +132,7 @@ fn draw_circles(query: *ecs.Query(struct { Pos, Circle })) void {
     var iter = query.iter();
     while (iter.next()) |item| {
         const pos, const circle = item;
-        rl.drawCircle(@intFromFloat(pos[0].x), @intFromFloat(pos[0].y), circle.size, circle.color);
+        rl.drawCircle(@intFromFloat(pos.x), @intFromFloat(pos.y), circle.size, circle.color);
     }
 }
 
@@ -141,14 +141,14 @@ fn update_balls(query: *ecs.Query(struct { Pos, Velocity, Circle })) void {
     var i: u32 = 0;
     while (iter.next()) |item| {
         const pos, const velocity, const circle = item;
-        pos[0] = pos[0].add(velocity[0].scale(rl.getFrameTime()));
+        pos.* = pos.add(velocity.scale(rl.getFrameTime()));
 
-        if (pos[0].x >= @as(f32, @floatFromInt(screenWidth)) - circle.size or pos[0].x <= circle.size) {
-            velocity[0].x = -velocity[0].x;
+        if (pos.x >= @as(f32, @floatFromInt(screenWidth)) - circle.size or pos.x <= circle.size) {
+            velocity.x = -velocity.x;
         }
 
-        if (pos[0].y >= @as(f32, @floatFromInt(screenHeight)) - circle.size or pos[0].y <= circle.size) {
-            velocity[0].y = -velocity[0].y;
+        if (pos.y >= @as(f32, @floatFromInt(screenHeight)) - circle.size or pos.y <= circle.size) {
+            velocity.y = -velocity.y;
         }
 
         var other_iter = query.iter();
@@ -160,18 +160,18 @@ fn update_balls(query: *ecs.Query(struct { Pos, Velocity, Circle })) void {
 
             const other_pos, const other_velocity, const other_circle = other;
 
-            const overlap = (circle.size + other_circle.size) - pos[0].distance(other_pos[0]);
+            const overlap = (circle.size + other_circle.size) - pos.distance(other_pos.*);
 
             if (overlap < 0) continue;
 
-            const difference = pos[0].subtract(other_pos[0]).normalize();
-            pos[0] = pos[0].add(difference.scale(0.5 * overlap));
-            other_pos[0] = other_pos[0].add(difference.scale(-0.5 * overlap));
+            const difference = pos.subtract(other_pos.*).normalize();
+            pos.* = pos.add(difference.scale(0.5 * overlap));
+            other_pos.* = other_pos.add(difference.scale(-0.5 * overlap));
 
             const plane = rl.Vector2.init(difference.x, -difference.y);
 
-            velocity[0] = velocity[0].reflect(plane);
-            other_velocity[0] = other_velocity[0].reflect(plane);
+            velocity.* = velocity.reflect(plane);
+            other_velocity.* = other_velocity.reflect(plane);
         }
         i += 1;
     }
