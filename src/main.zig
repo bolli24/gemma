@@ -136,6 +136,7 @@ fn draw_circles(query: *ecs.Query(struct { Pos, Circle })) void {
     }
 }
 
+// FIXME: ball to ball collisions.
 fn update_balls(query: *ecs.Query(struct { Pos, Velocity, Circle })) void {
     var iter = query.iter();
     var i: u32 = 0;
