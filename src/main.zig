@@ -77,7 +77,7 @@ pub fn main() anyerror!void {
 
         try world.runSystem(draw_circles);
 
-        const score_text = try std.fmt.allocPrintZ(gpa.allocator(), "Score: {d}", .{world.get_resource(i32).?.*});
+        const score_text = try std.fmt.allocPrintSentinel(gpa.allocator(), "Score: {d}", .{world.get_resource(i32).?.*}, 0);
         defer gpa.allocator().free(score_text);
 
         const player_pos: rl.Vector2 = (try world.components(Pos)).get(player).?[0];

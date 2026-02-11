@@ -14,15 +14,15 @@ pub const World = struct {
     flags: std.ArrayList(bool),
     unused_ids: std.ArrayList(u32),
     generations: std.ArrayList(u32),
-    sets: std.AutoHashMap(TypeId, SparseSet(anyopaque)),
+    sets: std.AutoHashMap(TypeId, SparseSet(u8)),
     resources: std.AutoHashMap(TypeId, ResourcePtr),
     allocator: Allocator,
 
     pub fn init(allocator: Allocator) Self {
         return .{
-            .flags = .init(allocator),
-            .unused_ids = .init(allocator),
-            .generations = .init(allocator),
+            .flags = .empty,
+            .unused_ids = .empty,
+            .generations = .empty,
             .sets = .init(allocator),
             .resources = .init(allocator),
             .allocator = allocator,
@@ -30,9 +30,9 @@ pub const World = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.flags.deinit();
-        self.unused_ids.deinit();
-        self.generations.deinit();
+        self.flags.deinit(self.allocator);
+        self.unused_ids.deinit(self.allocator);
+        self.generations.deinit(self.allocator);
 
         var set_iter = self.sets.valueIterator();
         while (set_iter.next()) |set| {
@@ -64,8 +64,8 @@ pub const World = struct {
 
             return Entity{ .id = id, .generation = self.generations.items[id] };
         } else {
-            try self.flags.append(true);
-            try self.generations.append(0);
+            try self.flags.append(self.allocator, true);
+            try self.generations.append(self.allocator, 0);
 
             return Entity{ .id = @intCast(self.flags.items.len - 1), .generation = 0 };
         }
@@ -82,7 +82,7 @@ pub const World = struct {
         }
 
         self.flags.items[entity.id] = false;
-        try self.unused_ids.append(entity.id);
+        try self.unused_ids.append(self.allocator, entity.id);
     }
 
     pub fn add_component(self: *Self, entity: Entity, value: anytype) !void {
@@ -105,7 +105,7 @@ pub const World = struct {
 
     pub fn get_resource(self: *Self, comptime T: type) ?*T {
         const res = self.resources.get(typeId(T)) orelse return null;
-        return @alignCast(@ptrCast(res.ptr));
+        return @ptrCast(@alignCast(res.ptr));
     }
 
     pub fn remove_resource(self: *Self, comptime T: type) !void {
@@ -124,7 +124,7 @@ pub const World = struct {
         return self.flags.items[entity.id] and entity.generation == self.generations.items[entity.id];
     }
 
-    const SetInfo = struct { *SparseSet(anyopaque), type };
+    const SetInfo = struct { *SparseSet(u8), type };
 
     pub fn query(self: *Self, comptime query_type: type) !query_type {
         comptime var Values: type = undefined;
@@ -153,7 +153,7 @@ pub const World = struct {
         inline for (0..new_query.comps.len) |i| {
             const value_type = @typeInfo(Values).@"struct".fields[i].type;
             if (value_type != Entity) {
-                const set_type = std.meta.Child();
+                const set_type = std.meta.Child(value_type);
                 const set = try self.components(set_type);
                 new_query.comps[i] = @ptrCast(set);
             } else {
@@ -213,7 +213,7 @@ pub const World = struct {
                             .pointer => {
                                 input_args[i] = SystemArg{ .res = res_type };
                             },
-                            else => @compileError("Invald reource argument. Must be pointer.")
+                            else => @compileError("Invald reource argument. Must be pointer."),
                         }
                     }
                 },
@@ -428,11 +428,11 @@ fn makeSwapRemoveFn(comptime T: type) fn (*anyopaque, usize) void {
     }.swapRemove;
 }
 
-fn makeDeinitFn(comptime T: type) fn (*anyopaque) void {
+fn makeDeinitFn(comptime T: type) fn (*anyopaque, Allocator) void {
     return struct {
-        fn deinit(ptr: *anyopaque) void {
+        fn deinit(ptr: *anyopaque, allocator: Allocator) void {
             const list: *std.ArrayList(T) = @ptrCast(@alignCast(ptr));
-            list.deinit();
+            list.deinit(allocator);
         }
     }.deinit;
 }
@@ -443,23 +443,25 @@ pub fn SparseSet(comptime T: type) type {
         sparse: std.ArrayList(usize),
         data: std.ArrayList(T),
         swap_remove: *const fn (*anyopaque, usize) void,
-        data_deinit: *const fn (*anyopaque) void,
+        data_deinit: *const fn (*anyopaque, Allocator) void,
+        allocator: Allocator,
 
         const Self = @This();
 
         pub fn init(allocator: Allocator) Self {
             return Self{
-                .entities = .init(allocator),
-                .sparse = .init(allocator),
-                .data = .init(allocator),
+                .entities = .empty,
+                .sparse = .empty,
+                .data = .empty,
                 .swap_remove = makeSwapRemoveFn(T),
                 .data_deinit = makeDeinitFn(T),
+                .allocator = allocator,
             };
         }
         pub fn deinit(self: *Self) void {
-            self.entities.deinit();
-            self.sparse.deinit();
-            self.data_deinit(@ptrCast(&self.data));
+            self.entities.deinit(self.allocator);
+            self.sparse.deinit(self.allocator);
+            self.data_deinit(@ptrCast(&self.data), self.allocator);
         }
 
         pub fn contains(self: *Self, entity: Entity) bool {
@@ -474,11 +476,11 @@ pub fn SparseSet(comptime T: type) type {
                     return;
                 }
             } else {
-                try self.sparse.appendNTimes(std.math.maxInt(usize), entity.id - self.sparse.items.len + 1);
+                try self.sparse.appendNTimes(self.allocator, std.math.maxInt(usize), entity.id - self.sparse.items.len + 1);
             }
 
-            try self.data.append(value);
-            try self.entities.append(entity);
+            try self.data.append(self.allocator, value);
+            try self.entities.append(self.allocator, entity);
             self.sparse.items[entity.id] = self.data.items.len - 1;
         }
 
@@ -510,6 +512,7 @@ pub fn SparseSet(comptime T: type) type {
 pub const Commands = struct {
     const Self = @This();
     list: std.ArrayList(Command),
+    allocator: Allocator,
 
     const Command = union(enum) {
         delete: Entity,
@@ -517,16 +520,17 @@ pub const Commands = struct {
 
     pub fn init(allocator: Allocator) @This() {
         return Self{
-            .list = .init(allocator),
+            .list = .empty,
+            .allocator = allocator,
         };
     }
 
-    pub fn deinit(self: Self) void {
-        self.list.deinit();
+    pub fn deinit(self: *Self) void {
+        self.list.deinit(self.allocator);
     }
 
     pub fn delete(self: *Self, entity: Entity) !void {
-        try self.list.append(.{ .delete = entity });
+        try self.list.append(self.allocator, .{ .delete = entity });
     }
 };
 
@@ -588,13 +592,15 @@ const expectEqual = std.testing.expectEqual;
 const expect = std.testing.expect;
 
 fn printNumber(query: *Query(struct { i32 })) void {
-    while (query.next()) |item| {
+    var it = query.iter();
+    while (it.next()) |item| {
         std.debug.print("Number: {d}.\n", .{item[0].*});
     }
 }
 
 fn printCharNTimes(query: *Query(struct { i32, u8 })) void {
-    while (query.next()) |item| {
+    var it = query.iter();
+    while (it.next()) |item| {
         const number, const char = item;
         for (0..@intCast(number.*)) |_| {
             std.debug.print("{c}", .{char.*});
@@ -626,7 +632,8 @@ test "system" {
 
     var query = try world.query(Query(struct { i32 }));
 
-    while (query.next()) |item| {
+    var it = query.iter();
+    while (it.next()) |item| {
         std.debug.print("Number: {d}.\n", .{item[0].*});
     }
 }
