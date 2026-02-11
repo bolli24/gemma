@@ -27,9 +27,8 @@ pub fn main() anyerror!void {
     defer rl.closeWindow();
 
     rl.setTargetFPS(120);
-    //--------------------------------------------------------------------------------------
 
-    // const rand = prng.random();
+    //--------------------------------------------------------------------------------------
 
     const base_speed = 200.0;
 
@@ -44,7 +43,7 @@ pub fn main() anyerror!void {
     _ = try world.add_resource(i32, 0);
 
     // Main game loop
-    while (!rl.windowShouldClose()) { // Detect window close button or ESC key
+    while (!rl.windowShouldClose()) {
         // Update
         //----------------------------------------------------------------------------------
 
@@ -83,8 +82,6 @@ pub fn main() anyerror!void {
         const player_pos: rl.Vector2 = (try world.components(Pos)).get(player).?[0];
         rl.drawRectangle(@intFromFloat(player_pos.x), @intFromFloat(player_pos.y), 20, 20, .red);
         rl.drawText(score_text, 4, 4, 20, rl.Color.red);
-
-        //----------------------------------------------------------------------------------
     }
 }
 
