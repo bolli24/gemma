@@ -72,7 +72,7 @@ pub const World = struct {
     }
 
     pub fn delete(self: *Self, entity: Entity) !void {
-        if (self.flags.items[entity.id] == false) {
+        if (!self.isValid(entity)) {
             return;
         }
 
@@ -130,9 +130,9 @@ pub const World = struct {
         comptime var Values: type = undefined;
 
         comptime switch (@typeInfo(query_type)) {
-            .@"struct" => |info| {
-                if (std.mem.indexOf(u8, @typeName(query_type), "Query") != null) {
-                    for (info.fields) |field| {
+            .@"struct" => {
+                if (@hasDecl(query_type, "is_ecs_query")) {
+                    for (@typeInfo(query_type).@"struct".fields) |field| {
                         if (std.mem.eql(u8, field.name, "type")) {
                             Values = get_query_tuple(@typeInfo(field.type).@"struct");
                         }
@@ -199,7 +199,7 @@ pub const World = struct {
             }
             switch (@typeInfo(param_type)) {
                 .@"struct" => |info| {
-                    if (std.mem.indexOf(u8, @typeName(param_type), "Query") != null) {
+                    if (@hasDecl(param_type, "is_ecs_query")) {
                         for (info.fields) |field| {
                             if (std.mem.eql(u8, field.name, "type")) {
                                 input_args[i] = SystemArg{ .query = field.type };
@@ -207,7 +207,7 @@ pub const World = struct {
                             }
                         }
                         @compileError("Invald query type");
-                    } else if (std.mem.indexOf(u8, @typeName(param_type), "Res") != null) {
+                    } else if (@hasDecl(param_type, "is_ecs_res")) {
                         const res_type = info.fields[0].type;
                         switch (@typeInfo(res_type)) {
                             .pointer => {
@@ -306,7 +306,10 @@ pub const World = struct {
 };
 
 pub fn Res(comptime T: type) type {
-    return struct { value: T };
+    return struct {
+        value: T,
+        const is_ecs_res = true;
+    };
 }
 
 pub fn Query(comptime T: type) type {
@@ -320,7 +323,7 @@ pub fn Query(comptime T: type) type {
     if (!struct_info.is_tuple) @compileError("Query parameter must be a tuple struct.");
 
     if (struct_info.fields.len == 0) {
-        @compileLog("Query parameter must contain at least one field.");
+        @compileError("Query parameter must contain at least one field.");
     }
 
     const Values = get_query_tuple(struct_info);
@@ -385,6 +388,7 @@ pub fn Query(comptime T: type) type {
         comptime type: T = undefined,
 
         const Self = @This();
+        const is_ecs_query = true;
 
         pub fn iter(self: *Self) QueryIter {
             return QueryIter{
@@ -465,13 +469,17 @@ pub fn SparseSet(comptime T: type) type {
         }
 
         pub fn contains(self: *Self, entity: Entity) bool {
-            return (self.sparse.items.len > entity.id and self.sparse.items[entity.id] != std.math.maxInt(usize));
+            if (self.sparse.items.len <= entity.id) return false;
+            const index = self.sparse.items[entity.id];
+            if (index == std.math.maxInt(usize)) return false;
+            return self.entities.items[index].generation == entity.generation;
         }
 
         pub fn insert(self: *Self, entity: Entity, value: T) !void {
             if (self.sparse.items.len > entity.id) {
                 const index = self.sparse.items[entity.id];
                 if (index != std.math.maxInt(usize)) {
+                    std.debug.assert(self.entities.items[index].generation == entity.generation);
                     self.data.items[index] = value;
                     return;
                 }
@@ -488,6 +496,7 @@ pub fn SparseSet(comptime T: type) type {
             if (self.sparse.items.len <= entity.id) return null;
             const index = self.sparse.items[entity.id];
             if (index == std.math.maxInt(usize)) return null;
+            if (self.entities.items[index].generation != entity.generation) return null;
             return &self.data.items[index];
         }
 
@@ -495,6 +504,7 @@ pub fn SparseSet(comptime T: type) type {
             if (self.sparse.items.len <= entity.id) return;
             const index = &self.sparse.items[entity.id];
             if (index.* == std.math.maxInt(usize)) return;
+            if (self.entities.items[index.*].generation != entity.generation) return;
 
             const removed_index = index.*;
 
@@ -681,4 +691,41 @@ test "components" {
     try expectEqual(null, integers.get(entity1));
     try expect(integers.contains(entity2));
     try expect(!integers.contains(entity1));
+}
+
+test "stale entity handles" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var world = World.init(gpa.allocator());
+
+    // Create entity and add a component
+    const entity1 = try world.create();
+    try world.add_component(entity1, @as(i32, 42));
+
+    const integers = try world.components(i32);
+    try expect(integers.contains(entity1));
+    try expectEqual(42, integers.get(entity1).?.*);
+
+    // Delete entity
+    try world.delete(entity1);
+
+    // Create new entity that reuses the same ID
+    const entity2 = try world.create();
+    try expectEqual(entity1.id, entity2.id);
+    try expect(entity2.generation > entity1.generation);
+
+    // Add a component to the new entity
+    try world.add_component(entity2, @as(i32, 99));
+
+    // Stale handle must not see old or new component
+    try expect(!integers.contains(entity1));
+    try expectEqual(null, integers.get(entity1));
+
+    // Stale handle must not be able to remove the new entity's component
+    integers.remove(entity1);
+    try expect(integers.contains(entity2));
+    try expectEqual(99, integers.get(entity2).?.*);
+
+    // Stale handle must not be able to delete the new entity
+    try world.delete(entity1);
+    try expect(world.isValid(entity2));
 }
