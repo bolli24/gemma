@@ -652,25 +652,15 @@ pub fn Component(comptime T: type, comptime u: []const u8) type {
     const extra_type = @Type(extra);
 
     return struct {
-        T,
-        comptime extra_type = @enumFromInt(0),
+        value: T,
+        comptime extra_type: extra_type = @enumFromInt(0),
+        const is_ecs_component = true;
     };
 }
 
 pub fn DerefComponent(comptime T: type) type {
-    const info = @typeInfo(T);
-    const some_type = Component(struct {}, "some_type");
-    const some_name = @typeName(@typeInfo(some_type).@"struct".fields[1].type);
-
-    switch (info) {
-        .@"struct" => |struct_info| {
-            for (struct_info.fields) |*field| {
-                if (std.mem.eql(u8, some_name, @typeName(field.type))) {
-                    return struct_info.fields[0].type;
-                }
-            }
-        },
-        else => {},
+    if (@typeInfo(T) == .@"struct" and @hasDecl(T, "is_ecs_component")) {
+        return @typeInfo(T).@"struct".fields[0].type;
     }
     return T;
 }

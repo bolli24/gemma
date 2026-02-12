@@ -34,8 +34,8 @@ pub fn main() anyerror!void {
     defer world.deinit();
 
     const player = try world.create();
-    try world.add_component(player, Pos{.{ .x = screenWidth * 0.5, .y = screenHeight * 0.5 }});
-    try world.add_component(player, Player{.{ .size = 20.0 }});
+    try world.add_component(player, Pos{ .value = .{ .x = screenWidth * 0.5, .y = screenHeight * 0.5 } });
+    try world.add_component(player, Player{ .value = .{ .size = 20.0 } });
 
     _ = try world.add_resource(@as(i32, 0));
     _ = try world.add_resource(prng.random());
@@ -60,7 +60,7 @@ pub fn main() anyerror!void {
         const score_text = try std.fmt.allocPrintSentinel(gpa.allocator(), "Score: {d}", .{world.get_resource(i32).?.*}, 0);
         defer gpa.allocator().free(score_text);
 
-        const player_pos: rl.Vector2 = (try world.components(Pos)).get(player).?[0];
+        const player_pos: rl.Vector2 = (try world.components(Pos)).get(player).?.value;
         rl.drawRectangle(@intFromFloat(player_pos.x), @intFromFloat(player_pos.y), 20, 20, .red);
         rl.drawText(score_text, 4, 4, 20, rl.Color.red);
     }
@@ -170,8 +170,8 @@ fn spawn_balls(commands: *ecs.Commands, rand_res: *ecs.Res(*std.Random)) !void {
             std.math.lerp(40, screenHeight - 40, rand.float(f32)),
         );
 
-        try commands.add(entity, Pos{pos});
-        try commands.add(entity, Velocity{dir.scale(speed)});
+        try commands.add(entity, Pos{ .value = pos });
+        try commands.add(entity, Velocity{ .value = dir.scale(speed) });
         try commands.add(entity, Circle{
             .size = rand.float(f32) * 20 + 3,
             .color = .init(rand.int(u8), rand.int(u8), rand.int(u8), 255),
