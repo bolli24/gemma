@@ -361,45 +361,27 @@ pub fn Query(comptime T: type) type {
     const QueryIter = struct {
         query: *Query(T),
         current: usize,
+        entities: []Entity,
 
         pub fn next(self: *@This()) ?Values {
             var values: Values = undefined;
+            const entities = self.entities;
 
-            comptime var ref_index: usize = undefined;
-            inline for (@typeInfo(Values).@"struct".fields, 0..) |field, i| {
-                if (field.type == Entity) {
-                    if (@typeInfo(Values).@"struct".fields.len == 1) {
-                        // TODO:
-                        @compileError("Query must contain at least one none Entity field");
-                    }
-                } else {
-                    ref_index = i;
-                }
-            }
-
-            const entities = self.query.comps[ref_index].entities.items;
-
-            if (self.current == std.math.maxInt(usize) or entities.len == 0) return null;
+            if (self.current >= entities.len) return null;
 
             outer: for (entities[self.current..], self.current..) |*entity, current| {
                 inline for (self.query.comps, 0..) |set, i| {
                     if (struct_info.fields[i].type == Entity) {
                         values[i] = entity.*;
                     } else {
-                        const typed_set = @as(*SparseSet(struct_info.fields[i].type), @ptrCast(set));
+                        const typed_set: *SparseSet(struct_info.fields[i].type) = @ptrCast(set);
                         const ptr = typed_set.get(entity.*) orelse continue :outer;
                         values[i] = @ptrCast(ptr);
                     }
                 }
                 self.current = current + 1;
-                if (current >= entities.len) {
-                    self.current = std.math.maxInt(usize);
-                }
-
                 return values;
             }
-            self.current = std.math.maxInt(usize);
-
             return null;
         }
     };
@@ -414,9 +396,23 @@ pub fn Query(comptime T: type) type {
         const __is_ecs_query = void;
 
         pub fn iter(self: *Self) QueryIter {
+            var min_len: usize = std.math.maxInt(usize);
+            var driver_entities: []Entity = &.{};
+
+            inline for (self.comps, 0..) |set, i| {
+                if (struct_info.fields[i].type != Entity) {
+                    const typed: *SparseSet(struct_info.fields[i].type) = @ptrCast(set);
+                    if (typed.entities.items.len < min_len) {
+                        min_len = typed.entities.items.len;
+                        driver_entities = typed.entities.items;
+                    }
+                }
+            }
+
             return QueryIter{
                 .query = self,
                 .current = 0,
+                .entities = driver_entities,
             };
         }
 
