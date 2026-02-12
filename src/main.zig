@@ -30,41 +30,22 @@ pub fn main() anyerror!void {
 
     //--------------------------------------------------------------------------------------
 
-    const base_speed = 200.0;
-
     var world = ecs.World.init(gpa.allocator());
     defer world.deinit();
-    const rand = prng.random();
 
     const player = try world.create();
     try world.add_component(player, Pos{.{ .x = screenWidth * 0.5, .y = screenHeight * 0.5 }});
     try world.add_component(player, Player{.{ .size = 20.0 }});
 
-    _ = try world.add_resource(i32, 0);
+    _ = try world.add_resource(@as(i32, 0));
+    _ = try world.add_resource(prng.random());
 
     // Main game loop
     while (!rl.windowShouldClose()) {
         // Update
         //----------------------------------------------------------------------------------
 
-        if (rl.isKeyPressed(.space)) {
-            const entity = try world.create();
-            const dir = rl.Vector2.init(0, 1).rotate(rand.float(f32) * 2 * std.math.pi);
-            const speed = std.math.lerp(base_speed / 2, base_speed * 2, rand.float(f32));
-
-            const pos = rl.Vector2.init(
-                std.math.lerp(40, screenWidth - 40, rand.float(f32)),
-                std.math.lerp(40, screenHeight - 40, rand.float(f32)),
-            );
-
-            try world.add_component(entity, Pos{pos});
-            try world.add_component(entity, Velocity{dir.scale(speed)});
-            try world.add_component(entity, Circle{
-                .size = rand.float(f32) * 20 + 3,
-                .color = .init(rand.int(u8), rand.int(u8), rand.int(u8), 255),
-            });
-        }
-
+        try world.runSystem(spawn_balls);
         try world.runSystem(update_balls);
         try world.runSystem(player_control);
         try world.runSystem(player_kill);
@@ -172,6 +153,29 @@ fn update_balls(query: *ecs.Query(struct { Pos, Velocity, Circle })) void {
             other_velocity.* = other_velocity.reflect(plane);
         }
         i += 1;
+    }
+}
+
+fn spawn_balls(commands: *ecs.Commands, rand_res: *ecs.Res(*std.Random)) !void {
+    const rand = rand_res.value;
+    const base_speed = 200.0;
+
+    if (rl.isKeyPressed(.space)) {
+        const entity = try commands.spawn();
+        const dir = rl.Vector2.init(0, 1).rotate(rand.float(f32) * 2 * std.math.pi);
+        const speed = std.math.lerp(base_speed / 2, base_speed * 2, rand.float(f32));
+
+        const pos = rl.Vector2.init(
+            std.math.lerp(40, screenWidth - 40, rand.float(f32)),
+            std.math.lerp(40, screenHeight - 40, rand.float(f32)),
+        );
+
+        try commands.add(entity, Pos{pos});
+        try commands.add(entity, Velocity{dir.scale(speed)});
+        try commands.add(entity, Circle{
+            .size = rand.float(f32) * 20 + 3,
+            .color = .init(rand.int(u8), rand.int(u8), rand.int(u8), 255),
+        });
     }
 }
 

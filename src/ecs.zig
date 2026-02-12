@@ -90,11 +90,12 @@ pub const World = struct {
         try comps.insert(entity, value);
     }
 
-    pub fn add_resource(self: *Self, comptime T: type, resource: T) !*T {
+    pub fn add_resource(self: *Self, resource: anytype) !*@TypeOf(resource) {
+        const T = @TypeOf(resource);
         const ptr = try self.allocator.create(T);
         ptr.* = resource;
 
-        try self.resources.put(typeId(@TypeOf(resource)), .{
+        try self.resources.put(typeId(T), .{
             .ptr = ptr,
             .size_of = @sizeOf(T),
             .align_of = .fromByteUnits(@alignOf(T)),
@@ -290,13 +291,30 @@ pub const World = struct {
             switch (arg) {
                 .commands => {
                     const commands: *Commands = @ptrCast(args_tuple[i]);
+
+                    var spawned = std.ArrayList(Entity).empty;
+                    defer spawned.deinit(self.allocator);
+
                     for (commands.list.items) |cmd| {
                         switch (cmd) {
                             .delete => |entity| {
                                 try self.delete(entity);
                             },
+                            .spawn => {
+                                const entity = try self.create();
+                                try spawned.append(self.allocator, entity);
+                            },
+                            .add_component => |c| {
+                                const entity = switch (c.target) {
+                                    .existing => |e| e,
+                                    .new => |n| spawned.items[n.index],
+                                };
+                                try c.apply(self, entity, c.ptr);
+                                c.destroy(c.ptr, commands.allocator);
+                            },
                         }
                     }
+                    commands.list.clearRetainingCapacity();
                     commands.deinit();
                 },
                 else => {},
@@ -519,28 +537,87 @@ pub fn SparseSet(comptime T: type) type {
     };
 }
 
+pub const CommandEntity = union(enum) {
+    existing: Entity,
+    new: NewEntity,
+};
+
+pub const NewEntity = struct { index: u32 };
+
 pub const Commands = struct {
     const Self = @This();
     list: std.ArrayList(Command),
     allocator: Allocator,
+    spawn_count: u32,
 
     const Command = union(enum) {
         delete: Entity,
+        spawn: u32,
+        add_component: struct {
+            target: CommandEntity,
+            ptr: *anyopaque,
+            apply: *const fn (*World, Entity, *anyopaque) anyerror!void,
+            destroy: *const fn (*anyopaque, Allocator) void,
+        },
     };
 
     pub fn init(allocator: Allocator) @This() {
         return Self{
             .list = .empty,
             .allocator = allocator,
+            .spawn_count = 0,
         };
     }
 
     pub fn deinit(self: *Self) void {
+        for (self.list.items) |cmd| {
+            switch (cmd) {
+                .add_component => |c| c.destroy(c.ptr, self.allocator),
+                else => {},
+            }
+        }
         self.list.deinit(self.allocator);
     }
 
     pub fn delete(self: *Self, entity: Entity) !void {
         try self.list.append(self.allocator, .{ .delete = entity });
+    }
+
+    pub fn add(self: *Self, entity: anytype, value: anytype) !void {
+        const target = switch (@TypeOf(entity)) {
+            Entity => CommandEntity{ .existing = entity },
+            NewEntity => CommandEntity{ .new = entity },
+            else => @compileError("Expected Entity or NewEntity"),
+        };
+
+        const T = @TypeOf(value);
+        const ptr = try self.allocator.create(T);
+        ptr.* = value;
+
+        try self.list.append(self.allocator, .{ .add_component = .{
+            .target = target,
+            .ptr = ptr,
+            .apply = struct {
+                fn apply(world: *World, ent: Entity, p: *anyopaque) !void {
+                    const val: *T = @ptrCast(@alignCast(p));
+                    const set = try world.components(T);
+                    try set.insert(ent, val.*);
+                }
+            }.apply,
+            .destroy = struct {
+                fn destroy(p: *anyopaque, allocator: Allocator) void {
+                    const typed: *T = @ptrCast(@alignCast(p));
+                    allocator.destroy(typed);
+                }
+            }.destroy,
+        } });
+    }
+
+    pub fn spawn(self: *Self) !NewEntity {
+        const id = self.spawn_count;
+        self.spawn_count += 1;
+        try self.list.append(self.allocator, .{ .spawn = id });
+        return .{ .index = id };
     }
 };
 
