@@ -132,7 +132,7 @@ pub const World = struct {
 
         comptime switch (@typeInfo(query_type)) {
             .@"struct" => {
-                if (@hasDecl(query_type, "is_ecs_query")) {
+                if (@hasDecl(query_type, "__is_ecs_query")) {
                     for (@typeInfo(query_type).@"struct".fields) |field| {
                         if (std.mem.eql(u8, field.name, "type")) {
                             Values = get_query_tuple(@typeInfo(field.type).@"struct");
@@ -200,7 +200,7 @@ pub const World = struct {
             }
             switch (@typeInfo(param_type)) {
                 .@"struct" => |info| {
-                    if (@hasDecl(param_type, "is_ecs_query")) {
+                    if (@hasDecl(param_type, "__is_ecs_query")) {
                         for (info.fields) |field| {
                             if (std.mem.eql(u8, field.name, "type")) {
                                 input_args[i] = SystemArg{ .query = field.type };
@@ -208,7 +208,7 @@ pub const World = struct {
                             }
                         }
                         @compileError("Invald query type");
-                    } else if (@hasDecl(param_type, "is_ecs_res")) {
+                    } else if (@hasDecl(param_type, "__is_ecs_res")) {
                         const res_type = info.fields[0].type;
                         switch (@typeInfo(res_type)) {
                             .pointer => {
@@ -312,6 +312,11 @@ pub const World = struct {
                                 try c.apply(self, entity, c.ptr);
                                 c.destroy(c.ptr, commands.allocator);
                             },
+                            .remove_component => |c| {
+                                if (self.sets.getPtr(c.type_id)) |set| {
+                                    set.remove(c.entity);
+                                }
+                            },
                         }
                     }
                     commands.list.clearRetainingCapacity();
@@ -326,7 +331,7 @@ pub const World = struct {
 pub fn Res(comptime T: type) type {
     return struct {
         value: T,
-        const is_ecs_res = true;
+        const __is_ecs_res = void;
     };
 }
 
@@ -406,7 +411,7 @@ pub fn Query(comptime T: type) type {
         comptime type: T = undefined,
 
         const Self = @This();
-        const is_ecs_query = true;
+        const __is_ecs_query = void;
 
         pub fn iter(self: *Self) QueryIter {
             return QueryIter{
@@ -559,6 +564,10 @@ pub const Commands = struct {
             apply: *const fn (*World, Entity, *anyopaque) anyerror!void,
             destroy: *const fn (*anyopaque, Allocator) void,
         },
+        remove_component: struct {
+            entity: Entity,
+            type_id: TypeId,
+        },
     };
 
     pub fn init(allocator: Allocator) @This() {
@@ -613,6 +622,13 @@ pub const Commands = struct {
         } });
     }
 
+    pub fn remove(self: *Self, entity: Entity, comptime T: type) !void {
+        try self.list.append(self.allocator, .{ .remove_component = .{
+            .entity = entity,
+            .type_id = typeId(T),
+        } });
+    }
+
     pub fn spawn(self: *Self) !NewEntity {
         const id = self.spawn_count;
         self.spawn_count += 1;
@@ -621,9 +637,7 @@ pub const Commands = struct {
     }
 };
 
-const TypeId = *const struct {
-    _: u8,
-};
+const TypeId = *const u8;
 
 pub inline fn typeId(comptime T: type) TypeId {
     return &struct {
@@ -654,12 +668,12 @@ pub fn Component(comptime T: type, comptime u: []const u8) type {
     return struct {
         value: T,
         comptime extra_type: extra_type = @enumFromInt(0),
-        const is_ecs_component = true;
+        const __is_ecs_component = void;
     };
 }
 
 pub fn DerefComponent(comptime T: type) type {
-    if (@typeInfo(T) == .@"struct" and @hasDecl(T, "is_ecs_component")) {
+    if (@typeInfo(T) == .@"struct" and @hasDecl(T, "__is_ecs_component")) {
         return @typeInfo(T).@"struct".fields[0].type;
     }
     return T;
@@ -795,4 +809,87 @@ test "stale entity handles" {
     // Stale handle must not be able to delete the new entity
     try world.delete(entity1);
     try expect(world.isValid(entity2));
+}
+
+test "command delete" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var world = World.init(gpa.allocator());
+
+    const entity = try world.create();
+    try world.add_component(entity, @as(i32, 42));
+
+    const deleteSystem = struct {
+        fn system(commands: *Commands, query: *Query(struct { Entity, i32 })) !void {
+            var it = query.iter();
+            while (it.next()) |item| {
+                try commands.delete(item[0]);
+            }
+        }
+    }.system;
+
+    try world.runSystem(deleteSystem);
+
+    try expect(!world.isValid(entity));
+    const integers = try world.components(i32);
+    try expect(!integers.contains(entity));
+}
+
+test "command add component" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var world = World.init(gpa.allocator());
+
+    const entity = try world.create();
+    try world.add_component(entity, @as(i32, 10));
+
+    const addSystem = struct {
+        fn system(commands: *Commands, query: *Query(struct { Entity, i32 })) !void {
+            var it = query.iter();
+            while (it.next()) |item| {
+                try commands.add(item[0], @as(u8, 'z'));
+            }
+        }
+    }.system;
+
+    try world.runSystem(addSystem);
+
+    const chars = try world.components(u8);
+    try expect(chars.contains(entity));
+    try expectEqual('z', chars.get(entity).?.*);
+}
+
+test "command spawn with components" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var world = World.init(gpa.allocator());
+
+    const spawnSystem = struct {
+        fn system(commands: *Commands) !void {
+            const new = try commands.spawn();
+            try commands.add(new, @as(i32, 100));
+            try commands.add(new, @as(u8, 'a'));
+
+            const new2 = try commands.spawn();
+            try commands.add(new2, @as(i32, 200));
+        }
+    }.system;
+
+    try world.runSystem(spawnSystem);
+
+    const integers = try world.components(i32);
+    const chars = try world.components(u8);
+
+    // Two entities should have been spawned
+    try expectEqual(2, integers.entities.items.len);
+
+    // First spawned entity has both i32 and u8
+    const entity0 = Entity{ .id = 0, .generation = 0 };
+    try expect(integers.contains(entity0));
+    try expectEqual(100, integers.get(entity0).?.*);
+    try expect(chars.contains(entity0));
+    try expectEqual('a', chars.get(entity0).?.*);
+
+    // Second spawned entity has only i32
+    const entity1 = Entity{ .id = 1, .generation = 0 };
+    try expect(integers.contains(entity1));
+    try expectEqual(200, integers.get(entity1).?.*);
+    try expect(!chars.contains(entity1));
 }
