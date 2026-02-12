@@ -701,8 +701,8 @@ fn printCharNTimes(query: *Query(struct { i32, u8 })) void {
 }
 
 test "system" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    var world = World.init(gpa.allocator());
+    var world = World.init(std.testing.allocator);
+    defer world.deinit();
 
     const entity1 = try world.create();
     const entity2 = try world.create();
@@ -730,8 +730,8 @@ test "system" {
 }
 
 test "create entity" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    var world = World.init(gpa.allocator());
+    var world = World.init(std.testing.allocator);
+    defer world.deinit();
 
     const entity1 = try world.create();
     const entity2 = try world.create();
@@ -749,8 +749,8 @@ test "create entity" {
 }
 
 test "components" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    var world = World.init(gpa.allocator());
+    var world = World.init(std.testing.allocator);
+    defer world.deinit();
 
     const entity1 = try world.create();
     const entity2 = try world.create();
@@ -775,8 +775,8 @@ test "components" {
 }
 
 test "stale entity handles" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    var world = World.init(gpa.allocator());
+    var world = World.init(std.testing.allocator);
+    defer world.deinit();
 
     // Create entity and add a component
     const entity1 = try world.create();
@@ -812,8 +812,8 @@ test "stale entity handles" {
 }
 
 test "command delete" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    var world = World.init(gpa.allocator());
+    var world = World.init(std.testing.allocator);
+    defer world.deinit();
 
     const entity = try world.create();
     try world.add_component(entity, @as(i32, 42));
@@ -835,8 +835,8 @@ test "command delete" {
 }
 
 test "command add component" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    var world = World.init(gpa.allocator());
+    var world = World.init(std.testing.allocator);
+    defer world.deinit();
 
     const entity = try world.create();
     try world.add_component(entity, @as(i32, 10));
@@ -858,8 +858,8 @@ test "command add component" {
 }
 
 test "command spawn with components" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    var world = World.init(gpa.allocator());
+    var world = World.init(std.testing.allocator);
+    defer world.deinit();
 
     const spawnSystem = struct {
         fn system(commands: *Commands) !void {

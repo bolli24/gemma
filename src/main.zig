@@ -14,8 +14,8 @@ const screenHeight = 450;
 const player_speed = 200.0;
 
 pub fn main() anyerror!void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.detectLeaks();
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa.deinit();
 
     var prng = std.Random.DefaultPrng.init(blk: {
         var seed: u64 = undefined;
