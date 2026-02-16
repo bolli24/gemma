@@ -28,6 +28,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Expose the ECS module so other packages can import it
+    _ = b.addModule("gemma", .{
+        .root_source_file = b.path("src/ecs.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const raylib_dep = b.dependency("raylib_zig", .{
         .target = target,
         .optimize = optimize,
